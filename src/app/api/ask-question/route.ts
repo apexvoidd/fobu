@@ -15,30 +15,14 @@ export async function POST(req: NextRequest) {
     const nimModel = process.env.NVIDIA_NIM_MODEL || 'meta/llama-3.3-70b-instruct';
     const nimBaseUrl = process.env.NVIDIA_NIM_BASE_URL || 'https://integrate.api.nvidia.com/v1/chat/completions';
 
-    // If API Key is missing or default placeholder, provide intelligent contextual answer
     if (!apiKey || apiKey.trim() === '' || apiKey === 'YOUR_NVIDIA_NIM_API_KEY') {
-      const qLower = question.toLowerCase();
-      let mockAnswer = `Based on your form "${formContext?.formTitle || 'Official Form'}": `;
-
-      if (qLower.includes('document') || qLower.includes('attach') || qLower.includes('id') || qLower.includes('proof')) {
-        const docs = formContext?.requiredDocuments || ['Government Photo ID', 'Proof of Address'];
-        mockAnswer += `The required documents listed for this form are: ${docs.join(', ')}. Make sure all copies are legible and not expired.`;
-      } else if (qLower.includes('time') || qLower.includes('long')) {
-        mockAnswer += `The estimated time to complete this form is approximately ${formContext?.estimatedTime || '15 - 20 minutes'}.`;
-      } else if (qLower.includes('sign') || qLower.includes('ink') || qLower.includes('signature')) {
-        mockAnswer += `Signatures should be signed in black or dark blue ink. Do not use pencil or felt tip markers that bleed through paper.`;
-      } else if (qLower.includes('mistake') || qLower.includes('error') || qLower.includes('avoid')) {
-        const mistakes = formContext?.commonMistakes || ['Double check spelling', 'Verify all required fields are filled'];
-        mockAnswer += `Key common mistakes to avoid for this form: ${mistakes.join('; ')}.`;
-      } else {
-        mockAnswer += `Make sure to complete all required fields accurately. If you need step-by-step guidance on any field, click on that field card above for detailed examples.`;
-      }
-
-      return NextResponse.json({
-        success: true,
-        answer: mockAnswer,
-        source: 'context-assistant'
-      });
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'NVIDIA NIM API key is missing or unconfigured. Please configure NVIDIA_NIM_API_KEY to ask questions.'
+        },
+        { status: 401 }
+      );
     }
 
     const systemPrompt = `
@@ -76,6 +60,8 @@ Answer the user's specific question about this form clearly, accurately, and con
       'meta/llama-3.1-70b-instruct'
     ];
 
+    let lastErrorMsg = '';
+
     for (const modelCandidate of candidateModels) {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 8000); // 8 second timeout for fast Q&A
@@ -109,18 +95,22 @@ Answer the user's specific question about this form clearly, accurately, and con
               source: modelCandidate
             });
           }
+        } else {
+          lastErrorMsg = await nimRes.text();
         }
       } catch (candidateErr: any) {
         clearTimeout(timeoutId);
-        console.warn(`[FormBuddy Q&A] Fast call failed for model ${modelCandidate}:`, candidateErr?.message || candidateErr);
+        lastErrorMsg = candidateErr?.message || 'Request error';
       }
     }
 
-    return NextResponse.json({
-      success: true,
-      answer: `For "${formContext?.formTitle || 'this form'}", ensure all required entries match your legal documents. Key required items include: ${(formContext?.requiredDocuments || ['Government ID']).join(', ')}.`,
-      source: 'fallback'
-    });
+    return NextResponse.json(
+      {
+        success: false,
+        error: `Q&A assistant error: ${lastErrorMsg.slice(0, 100) || 'Unable to fetch answer from AI model.'}`
+      },
+      { status: 502 }
+    );
 
   } catch (error: any) {
     console.error('[FormBuddy Q&A] Error in ask-question route:', error);
