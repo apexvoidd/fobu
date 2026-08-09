@@ -1,0 +1,10 @@
+{
+  "functions": {
+    "src/app/api/analyze-form/route.ts": {
+      "maxDuration": 15
+    },
+    "src/app/api/ask-question/route.ts": {
+      "maxDuration": 15
+    }
+  }
+}

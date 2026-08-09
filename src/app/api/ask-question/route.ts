@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-export const maxDuration = 60; // Allow up to 60 seconds execution for AI Q&A
+export const maxDuration = 15; // Max 15s execution window for Vercel Serverless
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
@@ -15,7 +15,7 @@ export async function POST(req: NextRequest) {
     }
 
     const apiKey = process.env.NVIDIA_NIM_API_KEY;
-    const nimModel = process.env.NVIDIA_NIM_MODEL || 'meta/llama-3.3-70b-instruct';
+    const nimModel = process.env.NVIDIA_NIM_MODEL || 'meta/llama-3.1-8b-instruct';
     const nimBaseUrl = process.env.NVIDIA_NIM_BASE_URL || 'https://integrate.api.nvidia.com/v1/chat/completions';
 
     if (!apiKey || apiKey.trim() === '' || apiKey === 'YOUR_NVIDIA_NIM_API_KEY') {
@@ -58,19 +58,19 @@ Answer the user's specific question about this form clearly, accurately, and con
 
     const candidateModels = [
       nimModel,
-      'meta/llama-3.3-70b-instruct',
       'meta/llama-3.1-8b-instruct',
-      'meta/llama-3.1-70b-instruct'
+      'meta/llama-3.2-11b-vision-instruct',
+      'meta/llama-3.3-70b-instruct'
     ];
 
     let lastErrorMsg = '';
 
     for (const modelCandidate of candidateModels) {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout for Q&A
+      const timeoutId = setTimeout(() => controller.abort(), 8000); // 8 second timeout for fast Q&A
 
       try {
-        console.log(`[FormBuddy Q&A] Calling model "${modelCandidate}" (30s timeout)...`);
+        console.log(`[FormBuddy Q&A] Fast call model "${modelCandidate}" (8s timeout)...`);
         const nimRes = await fetch(nimBaseUrl, {
           method: 'POST',
           headers: {

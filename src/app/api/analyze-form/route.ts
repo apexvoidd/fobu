@@ -3,7 +3,7 @@ import { fetchFormUrlContent } from '@/lib/urlFetcher';
 import { extractPdfText } from '@/lib/pdfParser';
 import { FormFieldResult, AnalyzeFormApiResponse } from '@/types/form';
 
-export const maxDuration = 60; // Allow up to 60 seconds execution for AI generation
+export const maxDuration = 15; // Max 15s execution window for Vercel Serverless
 export const dynamic = 'force-dynamic';
 
 const SYSTEM_PROMPT = `
@@ -54,8 +54,8 @@ JSON SCHEMA REQUIREMENT:
 }
 `;
 
-// Fetch Helper with Generous AbortController Timeout (55 seconds) to allow full AI completion
-async function callNimWithTimeout(
+// Fast Fetch Helper with AbortController Timeout (12 seconds) to avoid Vercel 15s 504 limit
+async function callNimWithFastTimeout(
   baseUrl: string,
   apiKey: string,
   model: string,
@@ -63,10 +63,10 @@ async function callNimWithTimeout(
   temperature: number = 0.05
 ): Promise<{ ok: boolean; content?: string; error?: string }> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 55000); // 55 second generous timeout
+  const timeoutId = setTimeout(() => controller.abort(), 12000); // 12 second fast timeout
 
   try {
-    console.log(`[FormBuddy Backend] Calling AI model "${model}" with 55s timeout (max_tokens: 4096)...`);
+    console.log(`[FormBuddy Backend] Calling fast AI model "${model}" (max_tokens: 3000)...`);
     const response = await fetch(baseUrl, {
       method: 'POST',
       headers: {
@@ -77,7 +77,7 @@ async function callNimWithTimeout(
         model,
         messages,
         temperature,
-        max_tokens: 4096
+        max_tokens: 3000
       }),
       signal: controller.signal
     });
@@ -88,7 +88,7 @@ async function callNimWithTimeout(
       const json = await response.json();
       const content = json.choices?.[0]?.message?.content;
       if (content && content.trim().length > 10) {
-        console.log(`[FormBuddy Backend] Successfully received AI response from "${model}" (${content.length} chars).`);
+        console.log(`[FormBuddy Backend] Fast response from "${model}" (${content.length} chars).`);
         return { ok: true, content };
       }
     } else {
@@ -99,8 +99,8 @@ async function callNimWithTimeout(
   } catch (e: any) {
     clearTimeout(timeoutId);
     if (e.name === 'AbortError') {
-      console.warn(`[FormBuddy Backend] Model "${model}" timed out after 55 seconds.`);
-      return { ok: false, error: `AI model "${model}" generation timed out after 55 seconds.` };
+      console.warn(`[FormBuddy Backend] Model "${model}" timed out after 12s.`);
+      return { ok: false, error: `Model "${model}" generation timed out after 12 seconds.` };
     }
     console.warn(`[FormBuddy Backend] Fetch error for model "${model}":`, e?.message || e);
     return { ok: false, error: e?.message || 'Network fetch error' };
@@ -230,7 +230,6 @@ function parseAiContentToFormJson(rawText: string, defaultTitle: string = 'Analy
     console.error('[FormBuddy Backend] Smart Markdown parser error:', markdownErr);
   }
 
-  // Explicitly return null if parsing failed completely
   return null;
 }
 
@@ -394,22 +393,21 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Candidate models with generous execution window
+    // Ultra-fast model prioritization: 8B & 11B models respond in 1-3s on NIM (well under Vercel's 15s budget)
     const candidateModels = hasImages
       ? [
-          process.env.NVIDIA_NIM_MODEL || 'meta/llama-3.2-11b-vision-instruct',
-          'meta/llama-3.2-90b-vision-instruct'
+          process.env.NVIDIA_NIM_MODEL || 'meta/llama-3.2-11b-vision-instruct'
         ]
       : [
-          process.env.NVIDIA_NIM_MODEL || 'meta/llama-3.3-70b-instruct',
-          'meta/llama-3.1-8b-instruct',
-          'meta/llama-3.1-70b-instruct'
+          process.env.NVIDIA_NIM_MODEL || 'meta/llama-3.1-8b-instruct',
+          'meta/llama-3.2-11b-vision-instruct',
+          'meta/llama-3.3-70b-instruct'
         ];
 
     let lastErrorDetails = '';
 
     for (const modelCandidate of candidateModels) {
-      const result = await callNimWithTimeout(nimBaseUrl, apiKey, modelCandidate, [{ role: 'user', content: contentPayload }], 0.05);
+      const result = await callNimWithFastTimeout(nimBaseUrl, apiKey, modelCandidate, [{ role: 'user', content: contentPayload }], 0.05);
 
       if (result.ok && result.content) {
         const defaultTitle = files[0]?.name || urlFetchDetails?.title || 'Analyzed Form Document';
@@ -425,7 +423,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    console.error('[FormBuddy Backend] All candidate models failed. Returning explicit error response.');
+    console.error('[FormBuddy Backend] Candidate model execution failed. Returning explicit error response.');
     return NextResponse.json(
       {
         success: false,
