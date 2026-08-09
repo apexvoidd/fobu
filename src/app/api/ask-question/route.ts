@@ -72,45 +72,47 @@ Answer the user's specific question about this form clearly, accurately, and con
     const candidateModels = [
       nimModel,
       'meta/llama-3.3-70b-instruct',
-      'meta/llama-3.1-70b-instruct',
-      'meta/llama-3.2-11b-vision-instruct',
-      'mistralai/mixtral-8x22b-instruct'
+      'meta/llama-3.1-8b-instruct',
+      'meta/llama-3.1-70b-instruct'
     ];
 
-    const tokenLimits = [4096, 2048, 1024];
-
     for (const modelCandidate of candidateModels) {
-      for (const maxTokens of tokenLimits) {
-        try {
-          console.log(`[FormBuddy Q&A] Attempting model ${modelCandidate} max_tokens=${maxTokens}...`);
-          const nimRes = await fetch(nimBaseUrl, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${apiKey}`
-            },
-            body: JSON.stringify({
-              model: modelCandidate,
-              messages,
-              temperature: 0.3,
-              max_tokens: maxTokens
-            })
-          });
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 8000); // 8 second timeout for fast Q&A
 
-          if (nimRes.ok) {
-            const resData = await nimRes.json();
-            const answerText = resData.choices?.[0]?.message?.content?.trim();
-            if (answerText) {
-              return NextResponse.json({
-                success: true,
-                answer: answerText,
-                source: modelCandidate
-              });
-            }
+      try {
+        console.log(`[FormBuddy Q&A] Fast call model "${modelCandidate}" (8s timeout)...`);
+        const nimRes = await fetch(nimBaseUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`
+          },
+          body: JSON.stringify({
+            model: modelCandidate,
+            messages,
+            temperature: 0.3,
+            max_tokens: 1024
+          }),
+          signal: controller.signal
+        });
+
+        clearTimeout(timeoutId);
+
+        if (nimRes.ok) {
+          const resData = await nimRes.json();
+          const answerText = resData.choices?.[0]?.message?.content?.trim();
+          if (answerText) {
+            return NextResponse.json({
+              success: true,
+              answer: answerText,
+              source: modelCandidate
+            });
           }
-        } catch (candidateErr: any) {
-          console.warn(`[FormBuddy Q&A] Error calling model ${modelCandidate}:`, candidateErr?.message || candidateErr);
         }
+      } catch (candidateErr: any) {
+        clearTimeout(timeoutId);
+        console.warn(`[FormBuddy Q&A] Fast call failed for model ${modelCandidate}:`, candidateErr?.message || candidateErr);
       }
     }
 

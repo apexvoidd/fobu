@@ -51,56 +51,58 @@ JSON SCHEMA REQUIREMENT:
 }
 `;
 
-// Adaptive Token Call Helper: Tries max_tokens=16384 first, then falls back to 8192 and 4096 if model caps output
-async function callNimWithAdaptiveTokens(
+// Fast Single-Fetch Helper with AbortController Timeout (12 seconds)
+async function callNimWithFastTimeout(
   baseUrl: string,
   apiKey: string,
   model: string,
   messages: any[],
   temperature: number = 0.05
-): Promise<{ ok: boolean; content?: string; error?: string; maxTokensUsed?: number }> {
-  const tokenLimits = [16384, 8192, 4096];
-  let lastErr = '';
+): Promise<{ ok: boolean; content?: string; error?: string }> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 12000); // 12 second fast timeout
 
-  for (const maxTokens of tokenLimits) {
-    try {
-      console.log(`[FormBuddy Backend] Attempting AI call model="${model}" max_tokens=${maxTokens}...`);
-      const response = await fetch(baseUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`
-        },
-        body: JSON.stringify({
-          model,
-          messages,
-          temperature,
-          max_tokens: maxTokens
-        })
-      });
+  try {
+    console.log(`[FormBuddy Backend] Calling AI model "${model}" with fast 12s timeout (max_tokens: 4096)...`);
+    const response = await fetch(baseUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        temperature,
+        max_tokens: 4096
+      }),
+      signal: controller.signal
+    });
 
-      if (response.ok) {
-        const json = await response.json();
-        const content = json.choices?.[0]?.message?.content;
-        if (content && content.trim().length > 10) {
-          console.log(`[FormBuddy Backend] Success with model "${model}" at MAX TOKENS=${maxTokens} (${content.length} chars output).`);
-          return { ok: true, content, maxTokensUsed: maxTokens };
-        }
-      } else {
-        lastErr = await response.text();
-        console.warn(`[FormBuddy Backend] Model "${model}" max_tokens=${maxTokens} HTTP ${response.status}: ${lastErr.slice(0, 180)}`);
-        
-        // If HTTP 401/403 (auth issue), stop trying token limits for this key
-        if (response.status === 401 || response.status === 403) {
-          break;
-        }
+    clearTimeout(timeoutId);
+
+    if (response.ok) {
+      const json = await response.json();
+      const content = json.choices?.[0]?.message?.content;
+      if (content && content.trim().length > 10) {
+        console.log(`[FormBuddy Backend] Fast response from "${model}" (${content.length} chars).`);
+        return { ok: true, content };
       }
-    } catch (e: any) {
-      console.warn(`[FormBuddy Backend] Fetch error for model "${model}" max_tokens=${maxTokens}:`, e?.message || e);
+    } else {
+      const errText = await response.text();
+      console.warn(`[FormBuddy Backend] Model "${model}" HTTP ${response.status}: ${errText.slice(0, 150)}`);
+      return { ok: false, error: errText };
     }
+  } catch (e: any) {
+    clearTimeout(timeoutId);
+    if (e.name === 'AbortError') {
+      console.warn(`[FormBuddy Backend] Model "${model}" timed out after 12s.`);
+      return { ok: false, error: 'Request timed out after 12 seconds.' };
+    }
+    console.warn(`[FormBuddy Backend] Fetch error for model "${model}":`, e?.message || e);
   }
 
-  return { ok: false, error: lastErr };
+  return { ok: false, error: 'Failed to get valid AI response.' };
 }
 
 function parseAiContentToFormJson(rawText: string, defaultTitle: string = 'Analyzed Official Form'): AnalyzeFormApiResponse {
@@ -605,29 +607,24 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Select suitable candidate models for vision vs text documents
+    // Fast priority models
     const candidateModels = hasImages
       ? [
           process.env.NVIDIA_NIM_MODEL || 'meta/llama-3.2-11b-vision-instruct',
-          'meta/llama-3.2-90b-vision-instruct',
-          'nvidia/neva-22b',
-          'meta/llama-3.3-70b-instruct'
+          'meta/llama-3.2-90b-vision-instruct'
         ]
       : [
           process.env.NVIDIA_NIM_MODEL || 'meta/llama-3.3-70b-instruct',
-          'meta/llama-3.1-70b-instruct',
-          'nvidia/llama-3.1-nemotron-70b-instruct',
-          'meta/llama-3.2-11b-vision-instruct'
+          'meta/llama-3.1-8b-instruct',
+          'meta/llama-3.1-70b-instruct'
         ];
 
     let lastErrorDetails = '';
 
     for (const modelCandidate of candidateModels) {
-      console.log(`[FormBuddy Backend] Testing model candidate "${modelCandidate}"...`);
-      const result = await callNimWithAdaptiveTokens(nimBaseUrl, apiKey, modelCandidate, [{ role: 'user', content: contentPayload }], 0.05);
+      const result = await callNimWithFastTimeout(nimBaseUrl, apiKey, modelCandidate, [{ role: 'user', content: contentPayload }], 0.05);
 
       if (result.ok && result.content) {
-        console.log(`[FormBuddy Backend] Successfully retrieved AI output with model "${modelCandidate}" at MAX TOKENS=${result.maxTokensUsed}`);
         const defaultTitle = files[0]?.name || urlFetchDetails?.title || 'Analyzed Form Document';
         const parsedData = parseAiContentToFormJson(result.content, defaultTitle);
         return NextResponse.json(parsedData);
