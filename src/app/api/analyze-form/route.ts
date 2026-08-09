@@ -4,24 +4,30 @@ import { extractPdfText } from '@/lib/pdfParser';
 import { FormFieldResult, AnalyzeFormApiResponse } from '@/types/form';
 
 const SYSTEM_PROMPT = `
-You are FormBuddy AI, an expert vision and document extraction assistant for government and official forms.
+You are FormBuddy AI, an expert document and official form vision extraction assistant.
 
-COMPREHENSIVE FULL-DOCUMENT SCANNING DIRECTIVE:
-1. SCAN THE ENTIRE FORM FROM TOP TO BOTTOM: You MUST analyze ALL sections, parts, and pages of the document (Section A, Section B, Section C, Part I, Part II, Part III, Signature blocks, and Footers). DO NOT stop after the first section or first page!
-2. COVER EVERY FIELD ON THE FORM: Extract fields across the WHOLE form. Keep your explanations concise, clear, and direct so that all fields fit cleanly in your response.
-3. DO NOT SEPARATE CHECKBOX OPTIONS INTO SEPARATE FIELDS: Group multiple-choice checkboxes or radio buttons into ONE parent field with an "options" array.
-4. PRESERVE ORIGINAL FIELD NAMES: Keep original field/question labels as printed on the form.
-5. SIMPLE EVERYDAY LANGUAGE: Explain legalese and acronyms (SSN, EIN, TIN, DOB, DBA, Emergency Contact) in simple words.
-
-CRITICAL OUTPUT REQUIREMENT:
-You MUST respond ONLY with a raw, valid JSON object starting with '{' and ending with '}'. DO NOT include any introductory sentences or text outside the JSON.
+CRITICAL INSTRUCTIONS FOR ACCURATE FIELD EXTRACTION & EXAMPLES:
+1. SCAN THE ENTIRE DOCUMENT TOP TO BOTTOM: Analyze all sections, headers, parts, field labels, checkboxes, dates, instructions, signatures, and footers.
+2. HYPER-REALISTIC ACTIONABLE EXAMPLES REQUIRED:
+   - For EVERY field, you MUST provide a realistic, specific example entry matching the field type.
+   - NEVER return generic placeholders like "John Doe", "N/A", "Text", "Sample", or "Value".
+   - Examples must be concrete:
+     * Full Names: "Maria Elena Rodriguez" or "Robert James Smith"
+     * Dates: "04/15/1990"
+     * Phone Numbers: "(555) 234-5678"
+     * Addresses: "742 Evergreen Terrace, Springfield, IL 62704"
+     * SSN / Tax IDs: "XXX-XX-6789" or "XX-XXXXXXX"
+     * Income / Numbers: "$3,450.00 / month"
+     * Checkboxes / Radio: Name the exact option selection (e.g. "Select 'Full-Time Employee'")
+3. EXPLAIN WHAT TO ENTER IN SIMPLE WORDS: Explain acronyms (SSN, EIN, DOB, DBA, TIN) and legalese clearly.
+4. JSON ONLY OUTPUT: You MUST respond ONLY with a raw, valid JSON object starting with '{' and ending with '}'.
 
 JSON SCHEMA REQUIREMENT:
 {
   "formTitle": "Actual Title of the Form",
   "issuingAgency": "Name of Issuing Agency or Authority",
   "summary": "Brief 2-sentence summary of the form's overall purpose",
-  "estimatedTime": "Estimated completion time (e.g. 10 - 15 Minutes)",
+  "estimatedTime": "Estimated completion time (e.g. 15 - 20 Minutes)",
   "requiredDocuments": [
     "List of required documents or IDs needed"
   ],
@@ -139,7 +145,7 @@ function parseAiContentToFormJson(rawText: string, defaultTitle: string = 'Analy
           options: [],
           simple_meaning: meaningMatch?.[1] || `Enter your ${rawName.toLowerCase()} as requested on the form.`,
           what_to_enter: enterMatch?.[1] || `Provide accurate ${rawName.toLowerCase()} details.`,
-          example: exampleMatch?.[1] || (field_type === 'date' ? '04-15-1990' : rawName.toLowerCase().includes('phone') ? '555-0199' : rawName.toLowerCase().includes('email') ? 'user@example.com' : 'Jane Doe'),
+          example: exampleMatch?.[1] || (field_type === 'date' ? '04/15/1990' : rawName.toLowerCase().includes('phone') ? '(555) 234-5678' : rawName.toLowerCase().includes('email') ? 'user@example.com' : 'Maria Elena Rodriguez'),
           important_note: '',
           confidence
         });
@@ -472,7 +478,6 @@ export async function POST(req: NextRequest) {
     }
 
     const apiKey = process.env.NVIDIA_NIM_API_KEY;
-    const nimModel = process.env.NVIDIA_NIM_MODEL || 'meta/llama-3.2-11b-vision-instruct';
     const nimBaseUrl = process.env.NVIDIA_NIM_BASE_URL || 'https://integrate.api.nvidia.com/v1/chat/completions';
 
     if (!apiKey || apiKey.trim() === '' || apiKey === 'YOUR_NVIDIA_NIM_API_KEY') {
@@ -482,6 +487,7 @@ export async function POST(req: NextRequest) {
     }
 
     const contentPayload: any[] = [];
+    let hasImages = false;
 
     contentPayload.push({
       type: 'text',
@@ -492,7 +498,7 @@ export async function POST(req: NextRequest) {
       if (urlFetchDetails.contentType === 'pdf') {
         contentPayload.push({
           type: 'text',
-          text: `PDF Form fetched from URL: ${urlFetchDetails.url}. Title: ${urlFetchDetails.title}.\n\nExtracted PDF Document Content:\n${urlFetchDetails.extractedFieldsSummary || 'No text could be extracted directly from PDF URL.'}\n\nPlease scan ALL form fields, labels, inputs, checkboxes, instructions, and sections from top to bottom.`
+          text: `PDF Form fetched from URL: ${urlFetchDetails.url}. Title: ${urlFetchDetails.title}.\n\nExtracted PDF Document Text:\n${urlFetchDetails.extractedFieldsSummary || 'No text could be extracted directly from PDF URL.'}\n\nPlease analyze ALL form fields, labels, inputs, checkboxes, instructions, and sections from top to bottom.`
         });
       } else {
         contentPayload.push({
@@ -514,6 +520,7 @@ export async function POST(req: NextRequest) {
         nameLower.endsWith('.heic');
 
       if (isImg) {
+        hasImages = true;
         const buffer = await file.arrayBuffer();
         const base64 = Buffer.from(buffer).toString('base64');
         const mime = file.type && file.type.startsWith('image/') ? file.type : 'image/jpeg';
@@ -546,49 +553,71 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    console.log(`[FormBuddy Backend] Calling NVIDIA NIM API (${nimModel}) with max_tokens: 16384...`);
+    // Select suitable candidate models for vision vs text documents
+    const candidateModels = hasImages
+      ? [
+          process.env.NVIDIA_NIM_MODEL || 'meta/llama-3.2-11b-vision-instruct',
+          'meta/llama-3.2-90b-vision-instruct',
+          'nvidia/neva-22b',
+          'meta/llama-3.3-70b-instruct'
+        ]
+      : [
+          process.env.NVIDIA_NIM_MODEL || 'meta/llama-3.3-70b-instruct',
+          'meta/llama-3.1-70b-instruct',
+          'nvidia/llama-3.1-nemotron-70b-instruct',
+          'meta/llama-3.2-11b-vision-instruct'
+        ];
 
-    const nimResponse = await fetch(nimBaseUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        model: nimModel,
-        messages: [
-          {
-            role: 'user',
-            content: contentPayload
+    let lastErrorDetails = '';
+
+    for (const modelCandidate of candidateModels) {
+      try {
+        console.log(`[FormBuddy Backend] Attempting AI analysis with model: "${modelCandidate}" (max_tokens: 4096)...`);
+
+        const nimResponse = await fetch(nimBaseUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`
+          },
+          body: JSON.stringify({
+            model: modelCandidate,
+            messages: [
+              {
+                role: 'user',
+                content: contentPayload
+              }
+            ],
+            temperature: 0.05,
+            max_tokens: 4096
+          })
+        });
+
+        if (nimResponse.ok) {
+          const nimResult = await nimResponse.json();
+          const rawContent = nimResult.choices?.[0]?.message?.content;
+
+          if (rawContent && rawContent.trim().length > 10) {
+            console.log(`[FormBuddy Backend] Successfully received response from "${modelCandidate}" (${rawContent.length} chars).`);
+            const defaultTitle = files[0]?.name || urlFetchDetails?.title || 'Analyzed Form Document';
+            const parsedData = parseAiContentToFormJson(rawContent, defaultTitle);
+            return NextResponse.json(parsedData);
           }
-        ],
-        temperature: 0.05,
-        max_tokens: 16384
-      })
+        } else {
+          lastErrorDetails = await nimResponse.text();
+          console.warn(`[FormBuddy Backend] Model "${modelCandidate}" returned status ${nimResponse.status}: ${lastErrorDetails.slice(0, 200)}`);
+        }
+      } catch (modelErr: any) {
+        console.warn(`[FormBuddy Backend] Model "${modelCandidate}" execution error:`, modelErr?.message || modelErr);
+      }
+    }
+
+    console.error('[FormBuddy Backend] All candidate models failed. Returning fallback analysis with warning log.');
+    const primaryIdentifier = files[0]?.name || linkUrl || undefined;
+    return NextResponse.json({
+      ...getFallbackMockResponse(primaryIdentifier),
+      rawWarning: `AI API error details: ${lastErrorDetails.slice(0, 120) || 'All candidate models failed.'}`
     });
-
-    if (!nimResponse.ok) {
-      const errText = await nimResponse.text();
-      console.error('[FormBuddy Backend] NVIDIA NIM API Error:', nimResponse.status, errText);
-      return NextResponse.json({
-        ...getFallbackMockResponse(files[0]?.name || linkUrl || undefined),
-        rawWarning: `NVIDIA NIM API status ${nimResponse.status}. Displaying fallback analysis.`
-      });
-    }
-
-    const nimResult = await nimResponse.json();
-    const rawContent = nimResult.choices?.[0]?.message?.content;
-
-    if (!rawContent) {
-      throw new Error('NVIDIA NIM API returned empty message content.');
-    }
-
-    console.log(`[FormBuddy Backend] Received NVIDIA NIM Response (${rawContent.length} chars). Parsing fields...`);
-
-    const defaultTitle = files[0]?.name || urlFetchDetails?.title || 'Analyzed Form Document';
-    const parsedData = parseAiContentToFormJson(rawContent, defaultTitle);
-
-    return NextResponse.json(parsedData);
 
   } catch (error: any) {
     console.error('[FormBuddy Backend] Error in analyze-form route:', error);
