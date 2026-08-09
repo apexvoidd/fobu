@@ -623,7 +623,6 @@ export async function POST(req: NextRequest) {
 
   } catch (error: any) {
     console.error('[FormBuddy Backend] Error in analyze-form route:', error);
-    const primaryIdentifier = files[0]?.name || linkUrl || undefined;
-    return NextResponse.json(getFallbackMockResponse(primaryIdentifier));
+    return NextResponse.json(getFallbackMockResponse());
   }
 }
