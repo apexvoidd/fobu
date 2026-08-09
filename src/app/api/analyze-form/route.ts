@@ -3,6 +3,9 @@ import { fetchFormUrlContent } from '@/lib/urlFetcher';
 import { extractPdfText } from '@/lib/pdfParser';
 import { FormFieldResult, AnalyzeFormApiResponse } from '@/types/form';
 
+export const maxDuration = 60; // Allow up to 60 seconds execution for AI generation
+export const dynamic = 'force-dynamic';
+
 const SYSTEM_PROMPT = `
 You are FormBuddy AI, an expert document and official form vision extraction assistant.
 
@@ -51,8 +54,8 @@ JSON SCHEMA REQUIREMENT:
 }
 `;
 
-// Fast Single-Fetch Helper with AbortController Timeout (12 seconds)
-async function callNimWithFastTimeout(
+// Fetch Helper with Generous AbortController Timeout (55 seconds) to allow full AI completion
+async function callNimWithTimeout(
   baseUrl: string,
   apiKey: string,
   model: string,
@@ -60,10 +63,10 @@ async function callNimWithFastTimeout(
   temperature: number = 0.05
 ): Promise<{ ok: boolean; content?: string; error?: string }> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 12000); // 12 second fast timeout
+  const timeoutId = setTimeout(() => controller.abort(), 55000); // 55 second generous timeout
 
   try {
-    console.log(`[FormBuddy Backend] Calling AI model "${model}" with fast 12s timeout (max_tokens: 4096)...`);
+    console.log(`[FormBuddy Backend] Calling AI model "${model}" with 55s timeout (max_tokens: 4096)...`);
     const response = await fetch(baseUrl, {
       method: 'POST',
       headers: {
@@ -85,7 +88,7 @@ async function callNimWithFastTimeout(
       const json = await response.json();
       const content = json.choices?.[0]?.message?.content;
       if (content && content.trim().length > 10) {
-        console.log(`[FormBuddy Backend] Fast response from "${model}" (${content.length} chars).`);
+        console.log(`[FormBuddy Backend] Successfully received AI response from "${model}" (${content.length} chars).`);
         return { ok: true, content };
       }
     } else {
@@ -96,8 +99,8 @@ async function callNimWithFastTimeout(
   } catch (e: any) {
     clearTimeout(timeoutId);
     if (e.name === 'AbortError') {
-      console.warn(`[FormBuddy Backend] Model "${model}" timed out after 12s.`);
-      return { ok: false, error: `Model ${model} timed out after 12 seconds.` };
+      console.warn(`[FormBuddy Backend] Model "${model}" timed out after 55 seconds.`);
+      return { ok: false, error: `AI model "${model}" generation timed out after 55 seconds.` };
     }
     console.warn(`[FormBuddy Backend] Fetch error for model "${model}":`, e?.message || e);
     return { ok: false, error: e?.message || 'Network fetch error' };
@@ -391,7 +394,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Fast priority models
+    // Candidate models with generous execution window
     const candidateModels = hasImages
       ? [
           process.env.NVIDIA_NIM_MODEL || 'meta/llama-3.2-11b-vision-instruct',
@@ -406,7 +409,7 @@ export async function POST(req: NextRequest) {
     let lastErrorDetails = '';
 
     for (const modelCandidate of candidateModels) {
-      const result = await callNimWithFastTimeout(nimBaseUrl, apiKey, modelCandidate, [{ role: 'user', content: contentPayload }], 0.05);
+      const result = await callNimWithTimeout(nimBaseUrl, apiKey, modelCandidate, [{ role: 'user', content: contentPayload }], 0.05);
 
       if (result.ok && result.content) {
         const defaultTitle = files[0]?.name || urlFetchDetails?.title || 'Analyzed Form Document';

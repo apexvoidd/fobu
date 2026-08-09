@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+export const maxDuration = 60; // Allow up to 60 seconds execution for AI Q&A
+export const dynamic = 'force-dynamic';
+
 export async function POST(req: NextRequest) {
   try {
     const { question, formContext, conversationHistory } = await req.json();
@@ -64,10 +67,10 @@ Answer the user's specific question about this form clearly, accurately, and con
 
     for (const modelCandidate of candidateModels) {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 8000); // 8 second timeout for fast Q&A
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout for Q&A
 
       try {
-        console.log(`[FormBuddy Q&A] Fast call model "${modelCandidate}" (8s timeout)...`);
+        console.log(`[FormBuddy Q&A] Calling model "${modelCandidate}" (30s timeout)...`);
         const nimRes = await fetch(nimBaseUrl, {
           method: 'POST',
           headers: {
