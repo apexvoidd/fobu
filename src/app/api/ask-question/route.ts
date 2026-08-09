@@ -69,7 +69,6 @@ Answer the user's specific question about this form clearly, accurately, and con
 
     messages.push({ role: 'user', content: question.trim() });
 
-    // Try primary text model, fallback to secondary model if needed
     const candidateModels = [
       nimModel,
       'meta/llama-3.3-70b-instruct',
@@ -78,45 +77,43 @@ Answer the user's specific question about this form clearly, accurately, and con
       'mistralai/mixtral-8x22b-instruct'
     ];
 
-    let lastError = '';
+    const tokenLimits = [4096, 2048, 1024];
 
     for (const modelCandidate of candidateModels) {
-      try {
-        console.log(`[FormBuddy Q&A] Attempting model ${modelCandidate}...`);
-        const nimRes = await fetch(nimBaseUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`
-          },
-          body: JSON.stringify({
-            model: modelCandidate,
-            messages,
-            temperature: 0.3,
-            max_tokens: 1024
-          })
-        });
+      for (const maxTokens of tokenLimits) {
+        try {
+          console.log(`[FormBuddy Q&A] Attempting model ${modelCandidate} max_tokens=${maxTokens}...`);
+          const nimRes = await fetch(nimBaseUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${apiKey}`
+            },
+            body: JSON.stringify({
+              model: modelCandidate,
+              messages,
+              temperature: 0.3,
+              max_tokens: maxTokens
+            })
+          });
 
-        if (nimRes.ok) {
-          const resData = await nimRes.json();
-          const answerText = resData.choices?.[0]?.message?.content?.trim();
-          if (answerText) {
-            return NextResponse.json({
-              success: true,
-              answer: answerText,
-              source: modelCandidate
-            });
+          if (nimRes.ok) {
+            const resData = await nimRes.json();
+            const answerText = resData.choices?.[0]?.message?.content?.trim();
+            if (answerText) {
+              return NextResponse.json({
+                success: true,
+                answer: answerText,
+                source: modelCandidate
+              });
+            }
           }
-        } else {
-          lastError = await nimRes.text();
-          console.warn(`[FormBuddy Q&A] Model ${modelCandidate} HTTP ${nimRes.status}: ${lastError.slice(0, 150)}`);
+        } catch (candidateErr: any) {
+          console.warn(`[FormBuddy Q&A] Error calling model ${modelCandidate}:`, candidateErr?.message || candidateErr);
         }
-      } catch (candidateErr: any) {
-        console.warn(`[FormBuddy Q&A] Error calling model ${modelCandidate}:`, candidateErr?.message || candidateErr);
       }
     }
 
-    // Fallback contextual answer if model APIs fail
     return NextResponse.json({
       success: true,
       answer: `For "${formContext?.formTitle || 'this form'}", ensure all required entries match your legal documents. Key required items include: ${(formContext?.requiredDocuments || ['Government ID']).join(', ')}.`,

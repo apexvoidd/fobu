@@ -51,6 +51,58 @@ JSON SCHEMA REQUIREMENT:
 }
 `;
 
+// Adaptive Token Call Helper: Tries max_tokens=16384 first, then falls back to 8192 and 4096 if model caps output
+async function callNimWithAdaptiveTokens(
+  baseUrl: string,
+  apiKey: string,
+  model: string,
+  messages: any[],
+  temperature: number = 0.05
+): Promise<{ ok: boolean; content?: string; error?: string; maxTokensUsed?: number }> {
+  const tokenLimits = [16384, 8192, 4096];
+  let lastErr = '';
+
+  for (const maxTokens of tokenLimits) {
+    try {
+      console.log(`[FormBuddy Backend] Attempting AI call model="${model}" max_tokens=${maxTokens}...`);
+      const response = await fetch(baseUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model,
+          messages,
+          temperature,
+          max_tokens: maxTokens
+        })
+      });
+
+      if (response.ok) {
+        const json = await response.json();
+        const content = json.choices?.[0]?.message?.content;
+        if (content && content.trim().length > 10) {
+          console.log(`[FormBuddy Backend] Success with model "${model}" at MAX TOKENS=${maxTokens} (${content.length} chars output).`);
+          return { ok: true, content, maxTokensUsed: maxTokens };
+        }
+      } else {
+        lastErr = await response.text();
+        console.warn(`[FormBuddy Backend] Model "${model}" max_tokens=${maxTokens} HTTP ${response.status}: ${lastErr.slice(0, 180)}`);
+        
+        // If HTTP 401/403 (auth issue), stop trying token limits for this key
+        if (response.status === 401 || response.status === 403) {
+          break;
+        }
+      }
+    } catch (e: any) {
+      console.warn(`[FormBuddy Backend] Fetch error for model "${model}" max_tokens=${maxTokens}:`, e?.message || e);
+    }
+  }
+
+  return { ok: false, error: lastErr };
+}
+
 function parseAiContentToFormJson(rawText: string, defaultTitle: string = 'Analyzed Official Form'): AnalyzeFormApiResponse {
   const trimmed = rawText.trim();
 
@@ -571,44 +623,16 @@ export async function POST(req: NextRequest) {
     let lastErrorDetails = '';
 
     for (const modelCandidate of candidateModels) {
-      try {
-        console.log(`[FormBuddy Backend] Attempting AI analysis with model: "${modelCandidate}" (max_tokens: 4096)...`);
+      console.log(`[FormBuddy Backend] Testing model candidate "${modelCandidate}"...`);
+      const result = await callNimWithAdaptiveTokens(nimBaseUrl, apiKey, modelCandidate, [{ role: 'user', content: contentPayload }], 0.05);
 
-        const nimResponse = await fetch(nimBaseUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`
-          },
-          body: JSON.stringify({
-            model: modelCandidate,
-            messages: [
-              {
-                role: 'user',
-                content: contentPayload
-              }
-            ],
-            temperature: 0.05,
-            max_tokens: 4096
-          })
-        });
-
-        if (nimResponse.ok) {
-          const nimResult = await nimResponse.json();
-          const rawContent = nimResult.choices?.[0]?.message?.content;
-
-          if (rawContent && rawContent.trim().length > 10) {
-            console.log(`[FormBuddy Backend] Successfully received response from "${modelCandidate}" (${rawContent.length} chars).`);
-            const defaultTitle = files[0]?.name || urlFetchDetails?.title || 'Analyzed Form Document';
-            const parsedData = parseAiContentToFormJson(rawContent, defaultTitle);
-            return NextResponse.json(parsedData);
-          }
-        } else {
-          lastErrorDetails = await nimResponse.text();
-          console.warn(`[FormBuddy Backend] Model "${modelCandidate}" returned status ${nimResponse.status}: ${lastErrorDetails.slice(0, 200)}`);
-        }
-      } catch (modelErr: any) {
-        console.warn(`[FormBuddy Backend] Model "${modelCandidate}" execution error:`, modelErr?.message || modelErr);
+      if (result.ok && result.content) {
+        console.log(`[FormBuddy Backend] Successfully retrieved AI output with model "${modelCandidate}" at MAX TOKENS=${result.maxTokensUsed}`);
+        const defaultTitle = files[0]?.name || urlFetchDetails?.title || 'Analyzed Form Document';
+        const parsedData = parseAiContentToFormJson(result.content, defaultTitle);
+        return NextResponse.json(parsedData);
+      } else {
+        lastErrorDetails = result.error || 'Execution failed.';
       }
     }
 
