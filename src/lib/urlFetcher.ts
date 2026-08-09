@@ -1,4 +1,5 @@
 import { URL } from 'url';
+import { extractPdfText } from '@/lib/pdfParser';
 
 export interface FetchedFormContent {
   contentType: 'pdf' | 'html';
@@ -104,8 +105,8 @@ export function extractHtmlFormContent(html: string, pageUrl: string): { title: 
   let bodyText = cleanHtml.replace(/<[^>]+>/g, ' ');
   bodyText = bodyText.replace(/\s+/g, ' ').trim();
 
-  // Limit summary length for API efficiency
-  const truncatedText = bodyText.length > 4000 ? bodyText.slice(0, 4000) + '...' : bodyText;
+  // Allow up to 25,000 characters for comprehensive extraction of long forms
+  const truncatedText = bodyText.length > 25000 ? bodyText.slice(0, 25000) + '...' : bodyText;
 
   return {
     title,
@@ -122,7 +123,7 @@ export async function fetchFormUrlContent(linkUrl: string): Promise<FetchedFormC
   }
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 12000); // 12 second timeout
+  const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
 
   try {
     const response = await fetch(linkUrl, {
@@ -157,10 +158,14 @@ export async function fetchFormUrlContent(linkUrl: string): Promise<FetchedFormC
         throw new Error('Unsupported page: The PDF document appears to be empty or corrupted.');
       }
 
+      // Extract full text from PDF buffer
+      const pdfText = await extractPdfText(buffer);
+
       return {
         contentType: 'pdf',
         url: linkUrl,
         pdfBuffer: buffer,
+        extractedFieldsSummary: pdfText,
         title: linkUrl.split('/').pop() || 'PDF Document'
       };
     } else {
@@ -184,7 +189,7 @@ export async function fetchFormUrlContent(linkUrl: string): Promise<FetchedFormC
     clearTimeout(timeoutId);
 
     if (err.name === 'AbortError') {
-      throw new Error('Unable to access link: Connection timed out after 12 seconds.');
+      throw new Error('Unable to access link: Connection timed out after 15 seconds.');
     }
 
     if (err.message && err.message.startsWith('Unable to access link')) {

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { fetchFormUrlContent } from '@/lib/urlFetcher';
+import { extractPdfText } from '@/lib/pdfParser';
 import { FormFieldResult, AnalyzeFormApiResponse } from '@/types/form';
 
 const SYSTEM_PROMPT = `
@@ -491,12 +492,12 @@ export async function POST(req: NextRequest) {
       if (urlFetchDetails.contentType === 'pdf') {
         contentPayload.push({
           type: 'text',
-          text: `PDF Form fetched from URL: ${urlFetchDetails.url}. Title: ${urlFetchDetails.title}. Scan ALL sections from top to bottom.`
+          text: `PDF Form fetched from URL: ${urlFetchDetails.url}. Title: ${urlFetchDetails.title}.\n\nExtracted PDF Document Content:\n${urlFetchDetails.extractedFieldsSummary || 'No text could be extracted directly from PDF URL.'}\n\nPlease scan ALL form fields, labels, inputs, checkboxes, instructions, and sections from top to bottom.`
         });
       } else {
         contentPayload.push({
           type: 'text',
-          text: `HTML Web Form fetched from URL: ${urlFetchDetails.url}. Title: ${urlFetchDetails.title}.\n\nExtracted Content:\n${urlFetchDetails.extractedFieldsSummary}`
+          text: `HTML Web Form fetched from URL: ${urlFetchDetails.url}. Title: ${urlFetchDetails.title}.\n\nExtracted Web Page Content:\n${urlFetchDetails.extractedFieldsSummary}\n\nPlease analyze all input fields, labels, options, dropdowns, and instructions.`
         });
       }
     }
@@ -518,7 +519,12 @@ export async function POST(req: NextRequest) {
         const mime = file.type && file.type.startsWith('image/') ? file.type : 'image/jpeg';
         const dataUrl = `data:${mime};base64,${base64}`;
 
-        console.log(`[FormBuddy Backend] Converted image file "${file.name}" to base64 (${base64.length} chars).`);
+        console.log(`[FormBuddy Backend] Processing image "${file.name}" as vision input (${base64.length} chars).`);
+
+        contentPayload.push({
+          type: 'text',
+          text: `Visual Image Document attached: ${file.name}. Read all visible printed text, form titles, questions, checkboxes, input lines, signatures, and instructions carefully across the entire image.`
+        });
 
         contentPayload.push({
           type: 'image_url',
@@ -527,14 +533,20 @@ export async function POST(req: NextRequest) {
           }
         });
       } else if (mimeLower === 'application/pdf' || nameLower.endsWith('.pdf')) {
+        const arrayBuf = await file.arrayBuffer();
+        const buffer = Buffer.from(arrayBuf);
+        const extractedPdfContent = await extractPdfText(buffer);
+
+        console.log(`[FormBuddy Backend] Extracted ${extractedPdfContent.length} chars from uploaded PDF "${file.name}"`);
+
         contentPayload.push({
           type: 'text',
-          text: `PDF document attached: ${file.name}. Scan ALL sections from top to bottom.`
+          text: `Uploaded PDF Document (${file.name}):\n\n${extractedPdfContent || 'PDF document contains no readable text stream. Scan for document structure.'}\n\nPlease analyze ALL fields, questions, sections, and instructions contained in this PDF.`
         });
       }
     }
 
-    console.log(`[FormBuddy Backend] Calling NVIDIA NIM API (${nimModel}) with max_tokens: 6000...`);
+    console.log(`[FormBuddy Backend] Calling NVIDIA NIM API (${nimModel}) with max_tokens: 16384...`);
 
     const nimResponse = await fetch(nimBaseUrl, {
       method: 'POST',
@@ -550,8 +562,8 @@ export async function POST(req: NextRequest) {
             content: contentPayload
           }
         ],
-        temperature: 0.1,
-        max_tokens: 6000
+        temperature: 0.05,
+        max_tokens: 16384
       })
     });
 
